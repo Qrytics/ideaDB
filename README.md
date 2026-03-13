@@ -15,6 +15,7 @@
 7. [Getting Started](#getting-started)
    - [Prerequisites](#prerequisites)
    - [Installation](#installation)
+   - [Discord Bot Setup](#discord-bot-setup)
    - [Configuration](#configuration)
    - [Running the Bot](#running-the-bot)
 8. [Architecture Deep-Dive](#architecture-deep-dive)
@@ -38,13 +39,13 @@ Discord Messages  ──►  MetadataParser  ──►  SQLite DB  ──►  Id
 ```
 
 - **Everything up to idea generation is purely algorithmic** — no LLM, no API calls, no cost.
-- **The LLM is invoked only when you explicitly ask for ideas** (or when the auto-threshold is reached).
+- **The LLM is invoked only when you explicitly ask for ideas** (or when the 10-minute auto-timer fires and new messages have arrived).
 
 ---
 
 ## How It Works
 
-1. **Collection** — The bot listens to every channel it has access to. For each non-command message it:
+1. **Collection** — The bot listens to the configured input channels (or every channel it can read). For each non-command message it:
    - Parses the text using keyword-frequency analysis and stopword filtering.
    - Extracts tech/industry terms via regex pattern matching.
    - Analyses any attached files/GIFs (file type, dimensions, name tokens, media class).
@@ -53,11 +54,11 @@ Discord Messages  ──►  MetadataParser  ──►  SQLite DB  ──►  Id
 
 2. **Storage** — Extracted keywords and metadata are stored in a local SQLite database, keyed by Discord guild ID.
 
-3. **Idea Generation** — When you run `!ideas`, the bot:
+3. **Idea Generation** — When you run `!ideas`, or every 10 minutes if new messages have arrived, the bot:
    - Pulls the most-recent entries from the DB.
    - Aggregates top keywords by frequency, content-type breakdown, and tech-term mentions.
    - Sends a structured context prompt to the Groq API (`llama-3.1-8b-instant`).
-   - Returns the formatted ideas as a Discord embed.
+   - Returns the formatted ideas as a Discord embed posted to the designated output channel.
 
 ---
 
@@ -81,7 +82,8 @@ Discord Messages  ──►  MetadataParser  ──►  SQLite DB  ──►  Id
 
 ### ✅ Automatic Message Collection
 - Runs silently in the background.
-- Works across all channels the bot has read access to.
+- Collects from a configurable list of input channels (`INPUT_CHANNELS`), or all channels when not set.
+- Posts auto-generated ideas to a single designated output channel (`IDEA_CHANNEL`).
 - Ignores bot messages and command invocations.
 
 ### ✅ Algorithmic Metadata Extraction
@@ -100,8 +102,9 @@ Discord Messages  ──►  MetadataParser  ──►  SQLite DB  ──►  Id
 - All collected data survives bot restarts.
 - Entries are keyed by guild ID, so multiple servers are fully isolated.
 
-### ✅ Optional Auto-Generation
-- Configure `AUTO_IDEA_THRESHOLD` to post ideas automatically after N new entries.
+### ✅ Timer-Based Auto-Generation
+- Every `AUTO_IDEA_INTERVAL` minutes (default: 10), the bot checks whether any new messages have arrived since the last run.
+- Ideas are only posted **if** new messages were collected — no spam when channels are quiet.
 - Results are posted to your designated `IDEA_CHANNEL`.
 
 ---
@@ -148,7 +151,7 @@ ideaDB/
 ### Prerequisites
 
 - Python **3.11** or later
-- A [Discord bot token](https://discord.com/developers/applications) with the **Message Content** intent enabled
+- A Discord application with a bot user (see [Discord Bot Setup](#discord-bot-setup) below)
 - A [Groq API key](https://console.groq.com)
 
 ### Installation
@@ -167,6 +170,66 @@ source .venv/bin/activate        # macOS / Linux
 pip install -r requirements.txt
 ```
 
+---
+
+### Discord Bot Setup
+
+Follow these steps exactly to create your bot and obtain a token.
+
+#### Step 1 — Create an Application
+
+1. Go to [discord.com/developers/applications](https://discord.com/developers/applications) and click **New Application**.
+2. Give it a name (e.g. `ideaDB`) and click **Create**.
+
+#### Step 2 — Create a Bot User and Copy Your Token
+
+1. In the left sidebar, click **Bot**.
+2. Click **Reset Token** (you may need to confirm with your 2FA code).
+3. Click **Copy** immediately — the token is shown **only once**. Paste it into `DISCORD_TOKEN` in your `.env` file.
+
+   > ⚠️ **Treat your bot token like a password.** Anyone who has it can control your bot. Never commit it, share it, or paste it in a public channel.
+   >
+   > If you ever expose the token, go back to the **Bot** page and click **Reset Token** to invalidate the old one.
+
+#### Step 3 — Enable Privileged Gateway Intents
+
+Still on the **Bot** page, scroll down to **Privileged Gateway Intents** and enable **Message Content Intent**:
+
+| Intent | Why it's needed |
+|--------|-----------------|
+| **Message Content Intent** | **Required** — lets the bot read the actual text of messages so it can index and analyse conversations |
+
+You **do not** need to enable **Presence Intent** or **Server Members Intent** for the current version of this bot. Only turn those on if you later add features that explicitly require user presence or member‑join/leave events.
+
+Click **Save Changes**.
+
+#### Step 4 — Set Bot Permissions
+
+Still on the **Bot** page, scroll to **Bot Permissions** and check the following:
+
+**Text Permissions (minimum required)**
+
+| Permission | Why |
+|------------|-----|
+| ✅ Send Messages | Post idea embeds and command responses |
+| ✅ Embed Links | Send rich embed cards |
+| ✅ Read Message History | Access past messages in a channel |
+| ✅ View Channels | See and read text channels |
+| ✅ Add Reactions | Optional — for reaction-based UX |
+
+> All other permissions (Administrator, Manage Server, Kick/Ban Members, etc.) are **not needed** and should remain **unchecked**.
+
+#### Step 5 — Generate an Invite URL
+
+1. In the left sidebar, click **OAuth2**, then **URL Generator**.
+2. Under **Scopes**, check:
+   - `bot`
+   > IdeaDB currently uses traditional prefix commands (e.g. `!ideas`) and does **not** register slash commands, so the `applications.commands` scope is **not required**.
+3. Under **Bot Permissions**, check the permissions listed in Step 4 above.
+4. Copy the **Generated URL** at the bottom of the page and open it in your browser to invite the bot to your server.
+
+---
+
 ### Configuration
 
 Copy the example env file and fill in your credentials:
@@ -179,24 +242,30 @@ Open `.env` and set the values:
 
 ```dotenv
 # Required
-DISCORD_TOKEN=your_discord_bot_token_here
-GROQ_API_KEY=your_groq_api_key_here
+DISCORD_TOKEN=your_discord_bot_token_here   # from Bot → Reset Token
+GROQ_API_KEY=your_groq_api_key_here         # from console.groq.com
+
+# Input channels (comma-separated names or IDs; leave blank = all channels)
+INPUT_CHANNELS=general,brainstorming,random
+
+# Output channel — where auto-generated ideas are posted
+IDEA_CHANNEL=idea-generation
 
 # Optional
-IDEA_CHANNEL=idea-generation     # channel name or ID for auto-posts
-DB_PATH=ideadb.sqlite            # path for the SQLite database
-AUTO_IDEA_THRESHOLD=50           # auto-generate after N new entries (0 = off)
+DB_PATH=ideadb.sqlite        # path for the SQLite database
+AUTO_IDEA_INTERVAL=10        # minutes between auto-posts (0 = disabled)
 ```
 
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `DISCORD_TOKEN` | ✅ | — | Bot token from the Developer Portal |
+| `GROQ_API_KEY` | ✅ | — | Groq API key |
+| `INPUT_CHANNELS` | — | *(all)* | Comma-separated channel names or IDs to collect from |
+| `IDEA_CHANNEL` | — | *(none)* | Channel name or ID where ideas are posted |
+| `DB_PATH` | — | `ideadb.sqlite` | Path to the SQLite database file |
+| `AUTO_IDEA_INTERVAL` | — | `10` | Minutes between auto-posts; `0` disables |
+
 > ⚠️ **Never commit your `.env` file.** It is listed in `.gitignore`.
-
-### Discord Bot Setup
-
-1. Go to [discord.com/developers/applications](https://discord.com/developers/applications) and create a new application.
-2. Under **Bot**, click *Add Bot*, then copy the token into `DISCORD_TOKEN`.
-3. Under **Bot → Privileged Gateway Intents**, enable **Message Content Intent**.
-4. Under **OAuth2 → URL Generator**, select scopes: `bot` and permissions: `Read Messages/View Channels`, `Send Messages`, `Embed Links`.
-5. Use the generated URL to invite the bot to your server.
 
 ### Running the Bot
 
@@ -205,10 +274,13 @@ python bot.py
 ```
 
 You should see:
+
 ```
 ✅  IdeaDB is online — logged in as IdeaDB#1234 (id=...)
     Prefix: !   |   DB: ideadb.sqlite
-    Auto-idea threshold: disabled
+    Input channels: general, brainstorming, random
+    Output channel: idea-generation
+    Auto-idea interval: 10 min
 ```
 
 ---
@@ -288,10 +360,15 @@ Indices on `guild_id` and `(guild_id, content_type)` keep queries fast even with
 
 ## Auto-Idea Generation
 
-Set `AUTO_IDEA_THRESHOLD=50` (or any positive integer) in your `.env` file.  
-After every 50 new collected entries the bot posts 3 auto-generated ideas to the channel named in `IDEA_CHANNEL`.
+Set `AUTO_IDEA_INTERVAL=10` (or any positive integer) in your `.env` file.
 
-The counter resets per-guild after each auto-post and is held in memory (it resets on bot restart — by design, to avoid spamming after a restart).
+Every 10 minutes the bot checks whether at least one new message has been collected since the last auto-post. **If no new messages arrived, nothing is posted.** If new messages did arrive, the bot generates 3 ideas and posts them to `IDEA_CHANNEL`.
+
+This means:
+- **Quiet periods** → no spam; the bot stays silent.
+- **Active periods** → ideas are posted at most once per `AUTO_IDEA_INTERVAL` minutes.
+
+Set `AUTO_IDEA_INTERVAL=0` to disable timer-based auto-generation entirely.
 
 ---
 
