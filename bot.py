@@ -56,6 +56,9 @@ try:
 except ValueError:
     AUTO_IDEA_INTERVAL = 10
 
+if AUTO_IDEA_INTERVAL < 0:
+    raise RuntimeError("AUTO_IDEA_INTERVAL must be >= 0 minutes.")
+
 # ---------------------------------------------------------------------------
 # Validate required env vars up front
 # ---------------------------------------------------------------------------
