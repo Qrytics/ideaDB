@@ -215,7 +215,6 @@ Still on the **Bot** page, scroll to **Bot Permissions** and check the following
 | ✅ Embed Links | Send rich embed cards |
 | ✅ Read Message History | Access past messages in a channel |
 | ✅ View Channels | See and read text channels |
-| ✅ Use Slash Commands | Respond to slash-command interactions |
 | ✅ Add Reactions | Optional — for reaction-based UX |
 
 > All other permissions (Administrator, Manage Server, Kick/Ban Members, etc.) are **not needed** and should remain **unchecked**.
@@ -225,6 +224,7 @@ Still on the **Bot** page, scroll to **Bot Permissions** and check the following
 1. In the left sidebar, click **OAuth2**, then **URL Generator**.
 2. Under **Scopes**, check:
    - `bot`
+   > IdeaDB currently uses traditional prefix commands (e.g. `!ideas`) and does **not** register slash commands, so the `applications.commands` scope is **not required**.
 3. Under **Bot Permissions**, check the permissions listed in Step 4 above.
 4. Copy the **Generated URL** at the bottom of the page and open it in your browser to invite the bot to your server.
 
