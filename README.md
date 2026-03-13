@@ -193,13 +193,13 @@ Follow these steps exactly to create your bot and obtain a token.
 
 #### Step 3 — Enable Privileged Gateway Intents
 
-Still on the **Bot** page, scroll down to **Privileged Gateway Intents** and enable **all three**:
+Still on the **Bot** page, scroll down to **Privileged Gateway Intents** and enable **Message Content Intent**:
 
 | Intent | Why it's needed |
 |--------|-----------------|
-| **Presence Intent** | Allows the bot to see user presence updates |
-| **Server Members Intent** | Allows the bot to receive guild member events |
-| **Message Content Intent** | **Required** — lets the bot read the actual text of messages |
+| **Message Content Intent** | **Required** — lets the bot read the actual text of messages so it can index and analyse conversations |
+
+You **do not** need to enable **Presence Intent** or **Server Members Intent** for the current version of this bot. Only turn those on if you later add features that explicitly require user presence or member‑join/leave events.
 
 Click **Save Changes**.
 
