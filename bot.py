@@ -3,14 +3,9 @@ bot.py
 ======
 IdeaDB — Discord bot entry point.
 
-Listens to messages in configured input channels, runs MetadataParser on them
+Listens to every message in every channel, runs MetadataParser on it
 (text, attachments, GIFs, links), stores the results, and responds to
 slash-style prefix commands for idea generation and analytics.
-
-Input channels are configured via INPUT_CHANNELS (comma-separated channel
-names or IDs).  If INPUT_CHANNELS is empty the bot collects from every
-channel it can read.  Auto-generated ideas are posted to the single output
-channel set in IDEA_CHANNEL.
 
 Commands
 --------
@@ -22,11 +17,10 @@ Commands
 """
 
 import os
-from typing import Set
+from typing import Dict
 
 import discord
-from discord.ext import commands, tasks
-from dotenv import load_dotenv
+from discord.ext import commands
 
 from database import Database
 from idea_generator import IdeaGenerator
@@ -42,22 +36,12 @@ GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
 DB_PATH: str = os.getenv("DB_PATH", "ideadb.sqlite")
 IDEA_CHANNEL: str = os.getenv("IDEA_CHANNEL", "")
 
-# Comma-separated list of channel names or IDs to collect messages from.
-# Leave blank to collect from every readable channel.
-_INPUT_CHANNELS_RAW: str = os.getenv("INPUT_CHANNELS", "")
-INPUT_CHANNELS: Set[str] = {
-    c.strip() for c in _INPUT_CHANNELS_RAW.split(",") if c.strip()
-}
-
-# How often (in minutes) to auto-post ideas when new messages have arrived.
-# Set to 0 to disable timer-based auto-generation.
+# Number of new entries that trigger an automatic idea summary.
+# Set to 0 (or leave blank) to disable auto-generation.
 try:
-    AUTO_IDEA_INTERVAL: int = int(os.getenv("AUTO_IDEA_INTERVAL", "10"))
+    AUTO_IDEA_THRESHOLD: int = int(os.getenv("AUTO_IDEA_THRESHOLD", "0"))
 except ValueError:
-    AUTO_IDEA_INTERVAL = 10
-
-if AUTO_IDEA_INTERVAL < 0:
-    raise RuntimeError("AUTO_IDEA_INTERVAL must be >= 0 minutes.")
+    AUTO_IDEA_THRESHOLD = 0
 
 # ---------------------------------------------------------------------------
 # Validate required env vars up front
@@ -79,23 +63,8 @@ db = Database(db_path=DB_PATH)
 parser = MetadataParser()
 generator = IdeaGenerator(api_key=GROQ_API_KEY)
 
-# Track which guilds received at least one new message since the last auto-post.
-# The timer task checks this set every AUTO_IDEA_INTERVAL minutes.
-_guilds_with_new_messages: Set[str] = set()
-
-
-def _channel_is_allowed(channel: discord.abc.GuildChannel) -> bool:
-    """Return True if *channel* should be collected from.
-
-    When INPUT_CHANNELS is empty every readable channel is allowed.
-    Otherwise the channel's name *or* its ID must match the configured set.
-    """
-    if not INPUT_CHANNELS:
-        return True
-    return (
-        channel.name in INPUT_CHANNELS
-        or str(channel.id) in INPUT_CHANNELS
-    )
+# Track entries-since-last-auto-idea per guild (in memory; resets on restart)
+_new_since_last_idea: Dict[str, int] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -104,28 +73,15 @@ def _channel_is_allowed(channel: discord.abc.GuildChannel) -> bool:
 
 @bot.event
 async def on_ready() -> None:
-    if AUTO_IDEA_INTERVAL > 0:
-        if not auto_idea_timer.is_running():
-            auto_idea_timer.start()
-    channel_info = ", ".join(sorted(INPUT_CHANNELS)) if INPUT_CHANNELS else "all channels"
     print(f"✅  IdeaDB is online — logged in as {bot.user} (id={bot.user.id})")
     print(f"    Prefix: !   |   DB: {DB_PATH}")
-    print(f"    Input channels: {channel_info}")
-    print(f"    Output channel: {IDEA_CHANNEL or 'not configured'}")
-    interval_info = f"{AUTO_IDEA_INTERVAL} min" if AUTO_IDEA_INTERVAL else "disabled"
-    print(f"    Auto-idea interval: {interval_info}")
+    print(f"    Auto-idea threshold: {AUTO_IDEA_THRESHOLD or 'disabled'}")
 
 
 @bot.event
 async def on_message(message: discord.Message) -> None:
     # Ignore messages from bots (including ourselves)
     if message.author.bot:
-        return
-
-    # Only collect from allowed input channels (when INPUT_CHANNELS is set)
-    if message.guild and isinstance(message.channel, discord.abc.GuildChannel) and not _channel_is_allowed(message.channel):
-        # Still process commands even in non-input channels
-        await bot.process_commands(message)
         return
 
     # Let the command framework handle prefix commands first
@@ -149,9 +105,14 @@ async def on_message(message: discord.Message) -> None:
             raw_content=parsed["raw_content"],
         )
 
-        # Mark this guild as having new messages for the timer-based trigger
-        if AUTO_IDEA_INTERVAL > 0 and message.guild:
-            _guilds_with_new_messages.add(guild_id)
+        # ── Auto-idea trigger ─────────────────────────────────────────
+        if AUTO_IDEA_THRESHOLD > 0 and message.guild:
+            _new_since_last_idea[guild_id] = (
+                _new_since_last_idea.get(guild_id, 0) + 1
+            )
+            if _new_since_last_idea[guild_id] >= AUTO_IDEA_THRESHOLD:
+                _new_since_last_idea[guild_id] = 0
+                await _post_auto_ideas(message.guild)
 
 
 async def _post_auto_ideas(guild: discord.Guild) -> None:
@@ -182,23 +143,6 @@ async def _post_auto_ideas(guild: discord.Guild) -> None:
         await channel.send(embed=embed)
     except Exception as exc:
         print(f"[auto-ideas] Failed to generate ideas: {exc}")
-
-
-@tasks.loop(minutes=AUTO_IDEA_INTERVAL or 10)
-async def auto_idea_timer() -> None:
-    """Fire every AUTO_IDEA_INTERVAL minutes and post ideas for any guild
-    that received at least one new message since the last run."""
-    if not _guilds_with_new_messages:
-        return
-
-    # Snapshot and clear the set atomically before awaiting anything
-    pending = set(_guilds_with_new_messages)
-    _guilds_with_new_messages.clear()
-
-    for guild_id in pending:
-        guild = bot.get_guild(int(guild_id))
-        if guild:
-            await _post_auto_ideas(guild)
 
 
 # ---------------------------------------------------------------------------
