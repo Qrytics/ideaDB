@@ -107,7 +107,7 @@ async def on_ready() -> None:
     if AUTO_IDEA_INTERVAL > 0:
         if not auto_idea_timer.is_running():
             auto_idea_timer.start()
-    channel_info = ", ".join(INPUT_CHANNELS) if INPUT_CHANNELS else "all channels"
+    channel_info = ", ".join(sorted(INPUT_CHANNELS)) if INPUT_CHANNELS else "all channels"
     print(f"✅  IdeaDB is online — logged in as {bot.user} (id={bot.user.id})")
     print(f"    Prefix: !   |   DB: {DB_PATH}")
     print(f"    Input channels: {channel_info}")
